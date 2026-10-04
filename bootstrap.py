@@ -395,9 +395,20 @@ SETTINGS_MARKER = f"{DATA}/.settings_branded"
 def ensure_hosts():
     """Built-in hosts (server names) are written ONCE (new names + domain). After that hosts belong to the owner:
     rename, edit, add or delete them freely in the dashboard, nothing is reverted."""
-    if os.path.exists(HOSTS_MARKER): return
     if not DOMAIN:
-        log("WARNING: no public domain yet (Settings > Networking > Generate Domain), hosts skipped"); return
+        if not os.path.exists(HOSTS_MARKER):
+            log("WARNING: no public domain yet (Settings > Networking > Generate Domain), hosts skipped")
+        return
+    if os.path.exists(HOSTS_MARKER):
+        if open(HOSTS_MARKER).read().strip() == DOMAIN: return
+        # domain changed (new Railway domain / custom domain): only the address fields move, names stay yours
+        for h in as_list(must("GET", "/api/hosts"), "hosts"):
+            if str(h.get("inbound_tag") or "").startswith("JX-"):
+                nb = {k: v for k, v in h.items() if k != "id"}
+                nb.update({"address": [DOMAIN], "sni": [DOMAIN], "host": [DOMAIN]})
+                req("PUT", f"/api/host/{h['id']}", {**nb, "id": h["id"]})
+        open(HOSTS_MARKER, "w").write(DOMAIN)
+        log("domain changed: hosts moved to", DOMAIN); return
     existing = as_list(must("GET", "/api/hosts"), "hosts")
     changed = 0
     for idx, (tag, proto, port, net, path, fp, name, grp) in enumerate(INBOUNDS):
@@ -413,7 +424,7 @@ def ensure_hosts():
                 req("DELETE", f"/api/host/{extra['id']}")
         else:
             must("POST", "/api/host/", body); changed += 1
-    open(HOSTS_MARKER, "w").write(str(int(time.time())))
+    open(HOSTS_MARKER, "w").write(DOMAIN)
     log(f"{len(INBOUNDS)} hosts ready on", DOMAIN, f"({changed} written, now yours to edit)")
 
 def ensure_settings():
@@ -426,7 +437,8 @@ def ensure_settings():
     sub = s["subscription"]
     first = not os.path.exists(SETTINGS_MARKER)
     want = {}
-    if not sub.get("url_prefix"): want["url_prefix"] = f"https://{DOMAIN}"
+    cur = str(sub.get("url_prefix") or "")
+    if not cur or (cur.endswith(".up.railway.app") and cur != f"https://{DOMAIN}"): want["url_prefix"] = f"https://{DOMAIN}"
     if first: want.update({"url_prefix": sub.get("url_prefix") or f"https://{DOMAIN}", "profile_title": TITLE, "update_interval": 12})
     if all(sub.get(k) == v for k, v in want.items()):
         if first: open(SETTINGS_MARKER, "w").write("1")
